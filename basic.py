@@ -2,6 +2,9 @@
 TODO:
     - load directory: loads all files of specified filetype(s) in dir, use glob
         - Check what filetypes requires what loading procedure
+
+    - lyr.visible = False
+        - Updates in map view. Can build functionality around this consept. lyr is layer object
 '''
 
 from arcgis.features import GeoAccessor, GeoSeriesAccessor
@@ -69,15 +72,13 @@ def get_layer_dataframe(clear_select=True, **kwargs):
     sdf = pd.DataFrame.spatial.from_featureclass(lyr)
     return sdf
 
-def load_data(paths, map=None, **kwargs):
+def load_data(paths, **kwargs):
     '''Loads data from path, tested with shapefile. If no map specified, fetches first map
-    map: arcGIS map object
     paths: iterable with paths files, eg. r'path/to/shapefile.shp'
-    map_name: str
+    map_name: str, map to add data to
     map_index: int, def. 0
     '''
-    if not map:
-        map = get_map(get_currrent_project(), **kwargs)
+    map = get_map(**kwargs)
     for path in paths:
         map.addDataFromPath(path)
         print(f'loaded {path}')
