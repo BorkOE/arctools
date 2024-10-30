@@ -19,6 +19,8 @@ TODO:
         'FLOAT',
         )
 
+    - reclassify raster, arcpy.sa.Reclassify
+
     - Other interesting:
         - map.clearSelection() # Clears the selection for all layers and tables in a map
 '''
@@ -30,12 +32,17 @@ import arcpy
 import os
 from . import helpers
 import tempfile
+from glob import glob
 
 cwd = os.getcwd()
 # Keep as globals to simplyfy workflow, change with relevant set function
 aprx = None
 map = None
 lyr = None
+
+def set_cwd(set_cwd):
+   global cwd
+   cwd = set_cwd
 
 def get_currrent_project():
     return arcpy.mp.ArcGISProject("CURRENT")
@@ -77,7 +84,7 @@ def set_map(**kwargs):
     print(f'map set: {map.name}')
     return map
 
-def set_layer(**kwargs):
+def set_layer(layer_name='', **kwargs):
     '''
     sets layer in module memory, also returns it
     layer_name: str
@@ -85,7 +92,7 @@ def set_layer(**kwargs):
     global lyr, map
     if not map:
         set_map()
-    lyr = get_layer(**kwargs)
+    lyr = get_layer(layer_name=layer_name, **kwargs)
     print(f'layer set: {lyr.name}')
     return lyr
 
@@ -136,25 +143,63 @@ def sdf_to_df(sdf_frame, **kwargs):
     f.close()   # Close tempfile
     return frame
 
-def get_layer_dataframe(clear_select=True, sdf=False, **kwargs):
+def get_layer_dataframe(layer_name='', clear_select=True, sdf=False, **kwargs):
     '''Fetches dataframe
     layer_name: str
     layer_idx: int
     clear_selection: bool, it False, only return dataframe for selected features in layer attribute table. Else clears selection.
     sdf: bool, returns spatially enabled dataframe instead of regular pandas dataframe
     '''
-    set_layer(**kwargs)
+    if not layer_name in get_layer_names():
+        print(f'could not find "{layer_name}" in layers. Attempting to interpret as table.')
+        return pd.DataFrame(arcpy.da.TableToNumPyArray(layer_name, '*'))
+    
+    set_layer(layer_name=layer_name, **kwargs)
     if not lyr:
         print('Needs to set layer first!')
         return
     if clear_select:
         clear_selection(layer=lyr)   # Clears possible selection, else incomplete dataframe is returned
-    out_frame = pd.DataFrame.spatial.from_featureclass(lyr)
-    if sdf:
-        return out_frame
-    else:
-        return sdf_to_df(out_frame)
-        # return pd.read_clipboard(out_frame.drop(columns='SHAPE').to_clipboard())
+    try:
+        out_frame = pd.DataFrame.spatial.from_featureclass(lyr)
+        if sdf:
+            return out_frame
+        else:
+            return sdf_to_df(out_frame)
+    except KeyError as ke:
+        print(ke)
+        print('Trying to interpret input layer as table')
+        return pd.DataFrame(arcpy.da.TableToNumPyArray(lyr, '*'))
+
+def raster_to_dataframe(infeature, repeat_col='COUNT', field_names='*', **kwargs):
+    '''Returns pd.DataFrame representation of raster where every row represent one cell
+    infeature: str
+    repeat_col: str, what column holds value for repeating rows'''
+    
+    frame = pd.DataFrame(arcpy.da.TableToNumPyArray(get_layer(infeature), 
+                                                    field_names, 
+                                                    **kwargs))
+    return (frame
+             .reindex(frame.index.repeat(frame[repeat_col]))
+             .reset_index(drop=True))
+
+def raster_float_to_dataframe(infeature):
+    '''Returns pd.DataFrame representation of raster where every row represent one cell. NOTE: can be very slow due to iterating over every raster cell
+    infeature: str, input raster layer name
+    '''
+    rast = arcpy.Raster(infeature)
+    idx = []
+    vals = []
+    with arcpy.sa.RasterCellIterator({"rasters":[rast]}) as rci:
+        for r in rci:
+            idx.append(f'{r}')
+            vals.append(rast[r])
+
+    return pd.DataFrame.from_dict({'cell_val':vals, 'index':idx}).set_index('index')
+
+def find_input_files(dirpath='indata', filetypes=('tif', 'shp', 'jpg')):
+    files = glob(f'{dirpath}/**/*', recursive=True)
+    return [f'{cwd}\\{f}' for f in files if f.endswith(filetypes)]
 
 def load_data(paths, **kwargs):
     '''Loads data from path, tested with shapefile. If no map specified, fetches first map
@@ -164,8 +209,12 @@ def load_data(paths, **kwargs):
     '''
     map = get_map(**kwargs)
     for path in paths:
-        map.addDataFromPath(path)
-        print(f'loaded {path}')
+        try:
+            map.addDataFromPath(path)
+            print(f'loaded {path}')
+        except Exception as e:
+            print(f'failed to load file: {path}')
+            print(e)
 
 def export_data(in_features, out_path, out_name, **kwargs):
     '''
@@ -183,6 +232,11 @@ def export_data(in_features, out_path, out_name, **kwargs):
                                 out_name,
                                 **kwargs
                                )
+
+def delete(in_data):
+    '''Delete given data element
+    in_data: str | list'''
+    arcpy.management.Delete(in_data)
 
 def select(sql_where, selection_type="NEW_SELECTION", **kwargs):
     '''Selects features in attribute table based on sql query, uses layer set in this module
@@ -210,23 +264,64 @@ def select_by_location(in_layer, overlap_type, select_features, **kwargs):
                                                helpers.get_layer_name(select_features),
                                                **kwargs)
 
-def clear_selection(how='', layer=''):
+def clear_selection(how='all', layer='', **kwargs):
     '''
+    how: str
+    layer: str
     '''
-    if how == 'all':
+    if (how == 'all') and (not layer):
         if not map:
-            print('load a map first using set_map')
-            return
+            set_map(**kwargs)
         map.clearSelection()
-        # for lyr in [l.name for l in map.listLayers()]:
-        #     try:
-        #         arcpy.SelectLayerByAttribute_management(lyr, "CLEAR_SELECTION")
-        #     except Exception as e:
-        #         print(f'Exception occured while clearing selection for layer: {lyr}')
+        print('Cleared all selections!')
     elif layer:
         arcpy.SelectLayerByAttribute_management(helpers.get_layer_name(layer), "CLEAR_SELECTION")    
+        print(f'Cleared selection in layer: {layer}')
     else:
         print('Unclear arguments, specify how="all" or layer="layername" ')
+
+def update_symbology(lyr, label_color_dict,  alpha=100, renderer_name=None):
+    '''Loops trough symbology items and updates labels and color
+    lyr: arcpy layer object
+    label_color_dict: dict of type {old_label:(new_label, [r,g,b,a]|hexcolor)}
+        Leave new label or color as a falsey value to leave previous setting as is
+    alpha: int, 0-100 that sets transparency, 0 is fully transparent
+    renderer_name: str, if supplied will set symbology to this renderer. Avilable are:
+            GraduatedColorsRenderer - A graduated colors renderer.
+            GraduatedSymbolsRenderer - A graduated symbols renderer.
+            UnclassedColorsRenderer - Unclassed colors renderer
+            SimpleRenderer - A single symbol renderer.
+            UniqueValueRenderer - A unique value renderer.
+'''
+    sym = lyr.symbology
+    label_color_dict = {str(k):v for k,v in label_color_dict.items()} # cast keys to string
+    
+    if renderer_name is not None:
+        sym.updateRenderer(renderer_name)
+        lyr.symbology = sym    # Update symbology
+        sym = lyr.symbology
+
+
+    for sym_grp in sym.renderer.groups: # NOTE: sym.renderer prev was sym.colorizer
+        for item in sym_grp.items:
+            new_item_spec = label_color_dict.get(item.label)
+            if new_item_spec:
+                new_lab, color = new_item_spec
+                if new_lab:
+                    item.label = new_lab
+                if color:
+                    if isinstance(color, str):  # hex color, transform
+                        color = helpers.hex_to_rgb(color)
+
+                    if len(color) == 4:
+                        item.symbol.color = {'RGB': color}
+                    elif len(color) == 3:
+                        item.symbol.color = {'RGB': color + [alpha]}
+                    else:
+                        print('Faulty RGB input!')
+                    
+    
+    lyr.symbology = sym    # Update symbology
 
 def initialize():
     global aprx
