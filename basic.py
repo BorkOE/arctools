@@ -197,6 +197,21 @@ def raster_float_to_dataframe(infeature):
 
     return pd.DataFrame.from_dict({'cell_val':vals, 'index':idx}).set_index('index')
 
+def frame_to_raster(frame, ref_raster):
+    '''Takes frame in tuple index of coordinates and one column with values and writes to raster. Returns raster object.
+        frame: pd.DataFrame
+        ref_raster: raster properties will be based on this raster'''
+    rasInfo = ref_raster.getRasterInfo()
+    out_raster = arcpy.Raster(rasInfo)
+    for idx, val in frame.iloc[:, 0].items():
+        if pd.isnull(val):
+            continue    # No need to write null values
+        
+        x, y = eval(idx) # idx is a string tuple, so we evaluate to get true tupple
+        out_raster[x, y] = val
+
+    return out_raster
+
 def find_input_files(dirpath='indata', filetypes=('tif', 'shp', 'jpg')):
     files = glob(f'{dirpath}/**/*', recursive=True)
     return [f'{cwd}\\{f}' for f in files if f.endswith(filetypes)]
